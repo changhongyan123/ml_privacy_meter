@@ -2,7 +2,7 @@ from math import ceil
 import numpy as np
 import torch
 from torch import nn, optim, Tensor
-import tensorflow as tf
+# import tensorflow as tf
 from torchvision import models
 import argparse
 from privacy_meter.audit import Audit, MetricEnum
@@ -13,6 +13,8 @@ from privacy_meter.information_source import InformationSource
 from privacy_meter.model import PytorchModel
 import torch
 import yaml
+import scipy.stats as stats
+from fitter import Fitter, get_common_distributions, get_distributions
 
 import torch
 import torchvision
@@ -385,6 +387,29 @@ def prepare_priavcy_risk_report(audit_results,configs, data_split_info=None,save
             
     return None
 
+def fitting_loss_distrib(losses):
+    f = Fitter(losses,distributions=['gamma','lognorm',"beta","burr","norm"])
+    f.fit()
+    f.summary()
+    distribution = f.get_best(method = 'sumsquare_error') # comprised of shape, location and scale parameters for the distribution
+    return distribution
+
+def get_pvalue(loss_distri, target_loss_value):
+    if loss_distri.keys([0]) == "gamma":
+        pvalue = stats.gamma.cdf(target_loss_value, loss_distri["gamma"][0])
+    elif loss_distri.keys([0]) == "lognorm":
+        pvalue = stats.lognorm.cdf(target_loss_value, loss_distri["lognorm"][0])
+    elif loss_distri.keys([0]) == "beta":
+        pvalue = stats.beta.cdf(target_loss_value, loss_distri["beta"][0],loss_distri["beta"][1])
+    elif loss_distri.keys([0]) == "burr":
+        pvalue = stats.burr.cdf(target_loss_value, loss_distri["burr"][0],loss_distri["burr"][1])
+    elif loss_distri.keys([0]) == "norm":
+        pvalue = stats.norm.cdf(target_loss_value)
+    else:
+        print("Unknown distribution!")
+    
+    return pvalue
+
 if __name__ == '__main__':
 
 
@@ -456,6 +481,18 @@ if __name__ == '__main__':
     )
     audit_obj.prepare()
     audit_results = audit_obj.run()  
+
+    # get p-value
+    target_losses = audit_obj.metric_objects[0].member_signals #(18000,)
+    ref_losses = audit_obj.metric_objects[0].reference_member_signals
+
+    for target_point_idx in range(target_losses.shape[0]):
+        target_loss = target_losses[target_point_idx]
+        distribution = fitting_loss_distrib(target_loss)
+        p_value = get_pvalue(distribution, ref_losses[target_point_idx])
+
+
+
     logging.info(f'running privacy meter costs {time.time()-baseline_time} seconds')
     logging.info(50*"#")
     
